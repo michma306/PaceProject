@@ -1,0 +1,162 @@
+# PaceSyncAI
+
+AI-powered duplicate work detection and collaboration opportunity finder.
+
+PaceSyncAI is a Python-based Streamlit application that helps teams detect overlapping work across uploaded documents. It standardizes work items from text and document files, compares them using semantic similarity, identifies possible duplication risks, and highlights opportunities for collaboration.
+
+This project was built to answer a practical problem: when multiple people or teams work on related tasks, it is often difficult to see whether they are duplicating effort or creating opportunities to collaborate. PaceSyncAI makes that insight easier to surface.
+
+## Why this project matters
+
+Teams often create work items in different formats and with inconsistent wording. Without a centralized comparison layer, duplicate effort can go unnoticed, and cross-team coordination can be delayed.
+
+PaceSyncAI addresses this by:
+- ingesting work-related files
+- extracting structured work item data
+- comparing documents semantically
+- calculating similarity and overlap scores
+- classifying results as:
+  - Duplication Risk
+  - Collaboration Opportunity
+  - Low Concern
+- surfacing explainable insights for review
+
+## Features
+
+- Upload multiple `.txt` and `.docx` files
+- Extract structured work-item fields from source documents
+- Manual input support for files that fail extraction
+- Semantic similarity analysis using embeddings
+- Pairwise comparison of work items
+- Business-context overlap scoring
+- PaceSync scoring model to rank duplicate/collaborative risks
+- AI-generated explanation for selected match pairs
+- CSV export of final results
+- Clean Streamlit dashboard for interactive use
+
+## Tech stack
+
+- Python
+- Streamlit
+- Pandas
+- NumPy
+- SciPy
+- Hugging Face embeddings
+- LlamaIndex
+- Plot-style output and analytics workflow
+
+## Project architecture
+
+The application is structured into modular components:
+
+- `webapp.py` — Streamlit application and user interface
+- `input_module.py` — file ingestion and structured data extraction
+- `analysis_module.py` — semantic comparison and risk classification
+- `output_module.py` — final result generation and explanation logic
+
+## How it works
+
+1. Upload work documents
+2. The input module structures the content into a work-item dataframe
+3. The analysis module compares each pair of items
+4. Similarity, overlap, and business metadata are scored
+5. Results are classified into risk categories
+6. Users can inspect findings and export outputs
+
+## Example workflow
+
+- Upload multiple project documents or work descriptions
+- Run the Input Module
+- Review extracted work items
+- Run the Analysis Module
+- Filter and inspect pairwise matches
+- View AI explanations for high-priority comparisons
+- Export final results as CSV
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.9+
+- pip
+- Virtual environment recommended
+
+### Install dependencies
+
+```bash
+git clone https://github.com/your-username/PaceProject.git
+cd PaceProject
+
+python -m venv .venv
+source .venv/bin/activate
+# On Windows:
+# .venv\Scripts\activate
+
+pip install streamlit pandas numpy scipy llama-index llama-index-embeddings-huggingface transformers python-docx
+```
+
+### Run the app
+
+```bash
+streamlit run webapp.py
+```
+
+Then open the local URL shown in the terminal, typically:
+
+```text
+http://localhost:8501
+```
+
+## Usage
+
+1. In the app, upload files containing work descriptions or related project notes.
+2. Click "Run Input Module".
+3. Review the extracted work-item table.
+4. Adjust the semantic, duplication, and collaboration thresholds if needed.
+5. Run the Analysis Module.
+6. Run the Output Module to generate final ranked results.
+7. Select a result pair to view details and request an AI explanation.
+8. Download the resulting CSV for reporting or sharing.
+
+## Project structure
+
+```text
+PaceProject/
+├── pacecode.py
+├── input_module.py
+├── analysis_module.py
+├── output_module.py
+├── README.md
+├── requirements.txt
+└── .gitignore
+```
+
+## Example result categories
+
+- Duplication Risk
+  - Two work items are highly similar and likely represent overlapping effort.
+- Collaboration Opportunity
+  - Two work items are related enough to coordinate, but not clearly redundant.
+- Low Concern
+  - The work items are sufficiently different or weakly related.
+
+## Future improvements
+
+- Add support for more file formats
+- Improve extraction quality for noisy or unstructured documents
+- Replace or enhance AI explanations with a more configurable LLM workflow
+- Add persistence and saved analyses
+- Add user authentication and team-level dashboards
+- Add visualization for similarity clusters and overlap trends
+
+## License
+
+This project is for educational and portfolio use. Please review and adjust licensing as needed for your organization or personal use.
+
+## Contact
+
+If you’d like to connect or discuss this project, feel free to reach out via GitHub or email.
+
+---
+
+PaceSyncAI demonstrates practical Python data processing, semantic analysis, and dashboard development in a way that is easy to understand and easy to present on a resume or portfolio.
