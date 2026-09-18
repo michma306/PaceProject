@@ -50,9 +50,9 @@ PaceSyncAI addresses this by:
 The application is structured into modular components:
 
 - `webapp.py` — Streamlit application and user interface
-- `input_module.py` — file ingestion and structured data extraction
-- `analysis_module.py` — semantic comparison and risk classification
-- `output_module.py` — final result generation and explanation logic
+- `inputmodule.py` — file ingestion and structured data extraction
+- `analysismodule.py` — semantic comparison and risk classification
+- `outputmodule.py` — final result generation and explanation logic
 
 ## How it works
 
