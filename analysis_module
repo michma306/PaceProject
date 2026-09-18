@@ -1,0 +1,271 @@
+"""
+analysis_module.py
+
+This module does not read raw files directly.
+It reads the structured table already prepared by the Input Module.
+
+This output is a table of:
+•	which two work items were compared,
+•	how similar they are,
+•	how close they are in vector space,
+•	how much their business context overlaps,
+•	and the final PaceSync result.
+
+The business classification logic is:
+•	Duplication Risk: the two work items are semantically close, have same/related deliverable, and final PaceSync score is high.
+•	Collaboration Opportunity: the two work items are related enough to coordinate, but not clearly duplicative. So connect them!
+•	Low Concern: weak similarity or weak business overlap.
+
+Dependencies:
+- pandas: creates pairwise_results_df
+- numpy: handles embedding arrays
+- itertools: creates unique work-item pairs
+- re: extracts year from time period strings
+- scipy.spatial.distance: calculates cosine distance and Euclidean distance
+- llama_index.embeddings.huggingface: creates embeddings from standardized_description
+
+Invocation Order:
+run_analysis_module()
+    -> generate embeddings from standardized_description
+    -> compare each unique pair
+    -> calculate cosine similarity
+    -> calculate Euclidean distance
+    -> convert Euclidean distance to Euclidean similarity
+    -> calculate overlap scores
+    -> calculate PaceSync Score
+    -> classify result
+    -> return pairwise_results_df for OUTPUT_MODULE
+"""
+
+import itertools
+import re
+import numpy as np
+import pandas as pd
+from scipy.spatial.distance import cosine, euclidean
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+
+# Load embedding model once again
+# Note that this is not redundant work from Input_Module
+# Embedding here will digest the distilled "description" rather than from the raw data
+# It will provide more accuracy and alignment
+embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en")
+
+
+# Calculate Overlap score between two strings where one may contain the other
+def overlap_score(value1, value2):
+    """
+    Args:
+        value1: metadata value from first work item
+        value2: metadata value from second work item
+
+    Return:
+        1.0 = same
+        0.5 = partially related
+        0.0 = different
+    """
+
+    value1 = str(value1).lower().strip()
+    value2 = str(value2).lower().strip()
+
+    # Complete match
+    if value1 == value2:
+        return 1.0
+
+    # Partial match containment
+    if value1 in value2 or value2 in value1:
+        return 0.5
+
+    # Irrelevant - no match
+    return 0.0
+
+# Calculate the overlap score for time periods
+# If it is the exactly same period, it is perfect match
+# If it is in the same year but different period, it is partial match.
+# otherwise, it is no match. 
+def time_overlap_score(period1, period2):
+    """
+    Simple PoC time overlap.
+
+    Args:
+        period1: time period from first work item
+        period2: time period from second work item
+
+    Return:
+        1.0 = exact same time period
+        0.5 = same year
+        0.0 = different or unclear
+    """
+
+    period1 = str(period1).lower().strip()
+    period2 = str(period2).lower().strip()
+
+    if period1 == period2:
+        return 1.0
+
+    year1 = re.findall(r"20\d{2}", period1)
+    year2 = re.findall(r"20\d{2}", period2)
+
+    if year1 and year2 and year1[0] == year2[0]:
+        return 0.5
+
+    return 0.0
+
+
+def run_analysis_module(
+    work_item_df,
+    semantic_threshold=0.70,
+    duplication_threshold=85,
+    collaboration_threshold=65
+):
+    """
+    Main function called by webapp.py.
+
+    Args:
+        work_item_df:
+            dataframe from Input Module
+
+        semantic_threshold:
+            minimum semantic similarity reference value from Streamlit
+
+        duplication_threshold:
+            PaceSync score threshold for Duplication Risk
+
+        collaboration_threshold:
+            PaceSync score threshold for Collaboration Opportunity
+
+    Return:
+        pairwise_results_df: dataframe containing pairwise comparison results
+    """
+
+    # Set up the empty list bucket. 
+    pairwise_results = []
+    pair_number = 1
+
+    # Step 1: Convert standardized descriptions into embedding vectors
+    # Re-embedding the description for distillation purpose
+    # Ready to calculate similarity for the vectors generated from this part.
+    # Convert embeddings into numpy arrays for scipy/numpy calculations
+    descriptions = work_item_df["standardized_description"].tolist()
+    embeddings = embed_model.get_text_embedding_batch(descriptions)
+    embeddings = [np.array(e) for e in embeddings]
+
+    # Step 2: Compare each unique pair of work items TO find overlapping and similarities
+    for i, j in itertools.combinations(range(len(work_item_df)), 2):
+
+        item_1 = work_item_df.iloc[i]
+        item_2 = work_item_df.iloc[j]
+
+        vector_1 = embeddings[i]
+        vector_2 = embeddings[j]
+
+        # Step 3: scipy cosine() returns cosine distance
+        # cosine similarity = 1 - cosine distance
+        cosine_similarity = 1 - cosine(vector_1, vector_2)
+
+        # Step 4: Euclidean distance
+        euclidean_distance = euclidean(vector_1, vector_2)
+
+        # Step 5: Convert Euclidean distance into similarity between 0 and 1
+        # Smaller distance means higher similarity
+        euclidean_similarity = 1 / (1 + euclidean_distance)
+
+        # Step 6: Combine cosine similarity and Euclidean similarity
+        semantic_similarity = (
+            0.70 * cosine_similarity
+            + 0.30 * euclidean_similarity
+        )
+
+        # Step 7: Calculate metadata overlap scores for literal comparisons of various String metadatas
+        deliverable_overlap = overlap_score(
+            item_1["deliverable_type"],
+            item_2["deliverable_type"]
+        )
+
+        business_function_overlap = overlap_score(
+            item_1["business_function"],
+            item_2["business_function"]
+        )
+
+        stakeholder_overlap = overlap_score(
+            item_1["stakeholder"],
+            item_2["stakeholder"]
+        )
+
+        # Step 7.1: Calculate metadata overlap scores for period comparison of time period. 
+        time_overlap = time_overlap_score(
+            item_1["time_period"],
+            item_2["time_period"]
+        )
+
+        # Step 8: Assemble all factors and Calculate final PaceSync Score
+        pacesync_score = (
+            0.40 * semantic_similarity
+            + 0.20 * deliverable_overlap
+            + 0.15 * time_overlap
+            + 0.15 * business_function_overlap
+            + 0.10 * stakeholder_overlap
+        ) * 100
+
+        # Step 9: Classify result based on benchmarks setup
+        # The business classification logic is:
+        # Duplication Risk: the two work items are semantically close, have same/related deliverable, and final PaceSync score is high.
+        # Collaboration Opportunity: the two work items are related enough to coordinate, but not clearly duplicative. So connect them!
+        # Low Concern: weak similarity or weak business overlap.
+
+        # if the overall sync score is very high AND the contents are very similar with each other
+        # it means that the two works are not only similar in contents but also similar in other factors
+        # therefore if they are in the same deliverable format (for example both teams are working on two reports)
+        # then it is highly likely that they are making efforts on the same work.
+        # thus they should be alerted not to waste time doing redundant work.
+        if (
+            pacesync_score >= duplication_threshold
+            and semantic_similarity >= semantic_threshold
+            and deliverable_overlap >= 0.5
+        ):
+            classification = "Duplication Risk"
+
+        # if the overall sync score is MODERATELY high AND the contents are MODERATELY similar with each other
+        # it means maybe they are MODERATELY similar to each other in contents and in other factors
+        # at this threshold, it is decided that the authors should at least communicate with each other
+        # to find whether there may be opportunities to work with each other for collaboration.
+        elif (
+            pacesync_score >= collaboration_threshold
+            and semantic_similarity >= semantic_threshold - 0.15
+        ):
+            classification = "Collaboration Opportunity"
+
+        # the Sync score is very low - therefore no concerns for duplication of work or opportunities for collaboration. 
+        else:
+            classification = "Low Concern"
+
+        # Step 10: Save result row
+        result = {
+            "pair_id": f"P{pair_number:03d}",
+            "work_item_id_1": item_1["work_item_id"],
+            "work_item_id_2": item_2["work_item_id"],
+            "cosine_similarity": round(float(cosine_similarity), 4),
+            "euclidean_distance": round(float(euclidean_distance), 4),
+            "euclidean_similarity": round(float(euclidean_similarity), 4),
+            "semantic_similarity": round(float(semantic_similarity), 4),
+            "deliverable_overlap": deliverable_overlap,
+            "time_overlap": time_overlap,
+            "business_function_overlap": business_function_overlap,
+            "stakeholder_overlap": stakeholder_overlap,
+            "pacesync_score": round(float(pacesync_score), 4),
+            "classification": classification
+        }
+
+        pairwise_results.append(result)
+        pair_number += 1
+
+    # Step 11: Convert results into dataframe
+    pairwise_results_df = pd.DataFrame(pairwise_results)
+
+    # Step 12: Sort by highest PaceSync Score first
+    pairwise_results_df = pairwise_results_df.sort_values(
+        by="pacesync_score",
+        ascending=False
+    ).reset_index(drop=True)
+
+    return pairwise_results_df
