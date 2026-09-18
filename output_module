@@ -1,0 +1,148 @@
+"""
+output_module.py
+
+This module does not read raw files directly.
+It receives the structured work-item dataframe from the Input Module
+and the pairwise scoring dataframe from the Analysis Module.
+
+What this module does:
+- Merges work-item details with pairwise analysis results on the common basis of files read
+- Shows which two files were compared
+- Displays similarity scores and PaceSync classification
+- Adds a recommended manager action
+- Supports a function for a simple AI-style explanation based on the dataframe numbers
+
+Dependencies:
+- pandas: creates and manages the final output dataframe
+
+Invocation Order:
+run_output_module()
+    -> create lookup table from work_item_df
+    -> loop through pairwise_results_df
+    -> retrieve file details for each pair
+    -> merge scores with file descriptions and metadata
+    -> generate recommended action
+    -> generate AI-style explanation
+    -> return final_results_df
+
+Final Output:
+- final_results_df
+
+The final dataframe is used by webapp.py for:
+- on-screen display
+- detailed pair review
+- explanation button
+- CSV download
+"""
+
+import pandas as pd
+from llama_index.core import Settings
+
+# generate recommendation based on finding of sync scores in form of String
+# return String recommendation
+def generate_recommended_action(classification):
+    if classification == "Duplication Risk":
+        return "Manager should review immediately to reduce duplicated work."
+    elif classification == "Collaboration Opportunity":
+        return "Manager should connect the two teams or owners for coordination."
+    else:
+        return "No immediate action required."
+
+# generate Prompt for AI explanation
+def generate_ai_explanation_with_llm(row):
+
+    prompt = f"""
+You are an AI assistant helping a manager understand potential duplicate work.
+
+Here is the data for a pair of work items:
+
+Pair ID: {row['pair_id']}
+File 1: {row['file_1']}
+File 2: {row['file_2']}
+
+PaceSync Score: {row['pacesync_score']}
+Classification: {row['classification']}
+
+Semantic Similarity: {row['semantic_similarity']}
+Deliverable Overlap: {row['deliverable_overlap']}
+Time Overlap: {row['time_overlap']}
+Business Function Overlap: {row['business_function_overlap']}
+Stakeholder Overlap: {row['stakeholder_overlap']}
+
+Task:
+Explain in plain English:
+- Why this pair received this classification
+- Whether this is likely duplication or collaboration
+- What the manager should do next
+
+Keep it short (3–5 sentences).
+Do not repeat the numbers too much. Focus on interpretation.
+"""
+    response = Settings.llm.complete(prompt)
+    return str(response).strip()
+
+
+# output operation module
+def run_output_module(work_item_df, pairwise_results_df):
+    """
+    Merge Input Module dataframe and Analysis Module dataframe
+    into final manager-facing output dataframe.
+    """
+
+    item_lookup = work_item_df.set_index("work_item_id")
+
+    final_records = []
+
+    # merge the dataframe by looping through the pair_wise_results from Analysis module
+    # with the dataframe generated from Input_Module for descriptions
+    for _, row in pairwise_results_df.iterrows():
+
+        item_1 = item_lookup.loc[row["work_item_id_1"]]
+        item_2 = item_lookup.loc[row["work_item_id_2"]]
+
+        record = {
+            "pair_id": row["pair_id"],
+
+            "work_item_id_1": row["work_item_id_1"],
+            "work_item_id_2": row["work_item_id_2"],
+
+            "file_1": item_1["source_filename"],
+            "file_2": item_2["source_filename"],
+
+            "description_1": item_1["standardized_description"],
+            "description_2": item_2["standardized_description"],
+
+            "business_function_1": item_1["business_function"],
+            "business_function_2": item_2["business_function"],
+
+            "deliverable_type_1": item_1["deliverable_type"],
+            "deliverable_type_2": item_2["deliverable_type"],
+
+            "time_period_1": item_1["time_period"],
+            "time_period_2": item_2["time_period"],
+
+            "stakeholder_1": item_1["stakeholder"],
+            "stakeholder_2": item_2["stakeholder"],
+
+            "cosine_similarity": row["cosine_similarity"],
+            "euclidean_distance": row["euclidean_distance"],
+            "euclidean_similarity": row["euclidean_similarity"],
+            "semantic_similarity": row["semantic_similarity"],
+
+            "deliverable_overlap": row["deliverable_overlap"],
+            "time_overlap": row["time_overlap"],
+            "business_function_overlap": row["business_function_overlap"],
+            "stakeholder_overlap": row["stakeholder_overlap"],
+
+            "pacesync_score": row["pacesync_score"],
+            "classification": row["classification"],
+        }
+
+        record["recommended_action"] = generate_recommended_action(record["classification"])
+
+        final_records.append(record)
+        
+    # the Final dataframe for output
+    final_results_df = pd.DataFrame(final_records)
+
+    return final_results_df
