@@ -1,0 +1,315 @@
+import json
+import re
+import pandas as pd
+import chromadb
+
+from llama_index.core import Document, Settings, StorageContext, VectorStoreIndex
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.ollama import Ollama
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from docx import Document as DocxDocument
+from pypdf import PdfReader
+
+
+
+
+#Dependencies for Input Module (RAG-based extraction)
+#This module uses the following libraries:
+
+#- streamlit: provides UploadedFile objects from the web app
+#- pandas: constructs the final work_item_df output
+#- python-docx: reads .docx files
+#- pypdf: reads .pdf files
+#- chromadb: stores document embeddings (persistent vector database)
+#- llama_index: builds the RAG pipeline (Document → Index → Query Engine)
+#- llama-index-embeddings-huggingface: generates text embeddings
+#- llama-index-llms-ollama: connects to local LLM (Ollama)
+#- ollama (external): runs the local LLM model (e.g., llama3.2:1b)
+
+#System Flow:
+#Uploaded files → text extraction → embedding → Chroma vector store →
+#RAG query → LLM structured extraction → pandas dataframe output
+
+#Invocation Order (Input Module)
+#run_input_module()
+#    → read_uploaded_file()
+#    → build_rag_index()
+#    → extract_work_item_fields()
+#        → index.as_query_engine()
+#        → query_engine.query()
+#        → extract_json_from_response()
+
+#Final Output:
+#    → pandas.DataFrame (work_item_df)
+
+
+# =========================
+# STEP 0 - SET UP LLM MODELS
+# =========================
+
+Settings.llm = Ollama(model="llama3.2:3b", request_timeout=360.0)
+
+embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en")
+Settings.embed_model = embed_model
+
+
+# =========================
+# FUNCTION 1 - READ FILES
+# =========================
+
+def read_uploaded_file(uploaded_file):
+    """
+    Read one uploaded .txt or .docx file and return plain text of the contents of the file. 
+
+    Args:
+        uploaded_file: a file either in txt form or docx form.
+        returns the plain text of contents of the file in form of String. 
+    """
+
+    filename = uploaded_file.name.lower()
+
+    #read txt file.
+
+    if filename.endswith(".txt"):
+        return uploaded_file.read().decode("utf-8", errors="ignore")
+
+    #read docx file. 
+
+    if filename.endswith(".docx"):
+        doc = DocxDocument(uploaded_file)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(paragraphs)
+
+    #read pdf file
+
+    if filename.endswith(".pdf"):
+        reader = PdfReader(uploaded_file)
+        text = ""
+        for page in reader.pages:
+            text += (page.extract_text() or "") + "\n"
+        return text        
+
+    #default blank empty String.
+    return ""
+
+
+# =========================
+# FUNCTION 2 - BUILD RAG INDEX
+# =========================
+
+def build_rag_index(documents):
+    """
+    Build and save a persistent ChromaDB RAG index.
+
+    Args:
+        documents: a list of document objects.
+        returns a permanent RAG index created by LLM model.     
+    """
+
+    db = chromadb.PersistentClient(path="./pacesync_chroma_db")
+
+    chroma_collection = db.get_or_create_collection("pacesync_input_module")
+
+    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    index = VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context,
+        embed_model=Settings.embed_model
+    )
+
+    return index
+
+
+# =========================
+# FUNCTION 3 - EXTRACT JSON
+# =========================
+
+def extract_json_from_response(response_text):
+    """
+    Extract JSON text from the LLM response and convert it to a Python dictionary.
+
+    Args:
+        response_text is a long string responded by AI model after querying a specific file.
+        returns a json dictionary 
+    """
+    response_text = str(response_text).strip()
+
+    print("\n========== RAW LLM RESPONSE ==========")
+    print(response_text)
+    print("======================================\n")
+
+    match = re.search(r"\{.*\}", response_text, re.DOTALL)
+
+    if not match:
+        print("No JSON object found in LLM response.")
+        print(response_text)
+
+        return {
+            "standardized_description": "Not specified",
+            "business_function": "Not specified",
+            "deliverable_type": "Not specified",
+            "time_period": "Not specified",
+            "stakeholder": "Not specified"
+        }
+
+    json_text = match.group(0)
+    return json.loads(json_text)
+
+    
+    #start_position = response_text.find("{")
+    #end_position = response_text.rfind("}")
+
+    #json_text = response_text[start_position:end_position + 1]
+
+    #return json.loads(json_text)
+
+
+# =========================
+# FUNCTION 4 - EXTRACT WORK ITEM INFO
+# =========================
+
+def extract_work_item_fields(index, source_filename):
+    """
+    Query the RAG index and extract structured work-item fields for one source file.
+
+    Args:
+        index - permanent index created by LLM model after reading an array of documents.
+        source_filename is the name of each file to be read and indexed in the form of String.
+        returns a json file extracting structured work-item fields for that source_filename. 
+    """
+
+    query_engine = index.as_query_engine(llm=Settings.llm)
+
+    #Build up a prompt to query the file. 
+    prompt = f"""
+    You are extracting structured business information from the document named: {source_filename}.
+
+    Use only information from this document. You cannot use any other information from anywhere else.
+
+    Return ONLY valid JSON in this exact format:
+
+    {{
+      "standardized_description": "...",
+      "business_function": "...",
+      "deliverable_type": "...",
+      "time_period": "...",
+      "stakeholder": "..."
+    }}
+
+    Rules:
+    - MUST RETURN VALID JSON FORMAT
+    - NO MARKUPS OR MARKDOWNS
+    - no special characters other than numbers and letters
+    - standardized_description should be concise and preserve the essential business meaning.
+    - standardized_description should be no more than 15 words.
+    - the time_period should be in the format of year-month.
+    - Preserve objective, scope, summary, conclusion, recommendation in the standardized_description.
+    - Keep deliverable, timing, and stakeholder if available.
+    - Limit deliverable to 2 words.
+    - Limit business function to 2 words.
+    - Limit stakeholder to 2 words.
+    - If a field is not clear, use "Not specified".
+    - Do not invent details.
+    """
+    #Query and record the response.
+    response = query_engine.query(prompt)
+
+    #Extract the required information from the response and return a dictionary. 
+    extracted = extract_json_from_response(str(response))
+
+    return extracted
+
+
+# =========================
+# FUNCTION 5 - MAIN INPUT MODULE
+# =========================
+
+def run_input_module(uploaded_files):
+    """
+    Main function called by webapp.py.
+
+    Input:
+        uploaded_files is a list of files from Streamlit st.file_uploader
+
+    Output:
+        work_item_df is a dataframe containing: file_name, standardized_description, business_function, deliverable_type, time_period and stakeholder. 
+    """
+
+    #Set up empty list for file objects. 
+    documents = []
+
+    # Step 1: Read uploaded files uniformly and convert them into LlamaIndex documents
+    for uploaded_file in uploaded_files:
+
+        # read a single file.  
+        file_text = read_uploaded_file(uploaded_file)
+
+        # create a document object containing the filename and the contents.
+        doc = Document(
+            text=file_text,
+            metadata={"source_filename": uploaded_file.name}
+        )
+
+        # append the document object to the documents list. 
+        documents.append(doc)
+
+    # Step 2: Build persistent RAG index
+    index = build_rag_index(documents)
+
+
+    # Step 3: Extract structured fields for each uploaded file
+    # create a temporary list. 
+    records = []
+
+    # looping throughout the uploaded file list and generate list of dictionaries.
+    for i, uploaded_file in enumerate(uploaded_files, start=1):
+
+        # extract necessary information from each file.
+        # anticipate LLM hallucination and produces some errors
+        # keep on extracting but produce error messages for managers
+        try:
+            extracted = extract_work_item_fields(
+                index=index,
+                source_filename=uploaded_file.name
+            )
+
+            # generate each record by reading each entry of the dictionary. 
+            record = {
+                "work_item_id": f"WI{i:03d}",
+                "source_filename": uploaded_file.name,
+                "standardized_description": extracted["standardized_description"],
+                "business_function": extracted["business_function"],
+                "deliverable_type": extracted["deliverable_type"],
+                "time_period": extracted["time_period"],
+                "stakeholder": extracted["stakeholder"],
+                "extraction_status": "Success"
+            }
+    
+        # LLM generated some errors
+        # we have to enter the information manually
+        except Exception as e:
+            print("Skipping file due to error", uploaded_file.name)
+            print("Error", e)
+
+            record = {
+                "work_item_id": f"WI{i:03d}",
+                "source_filename": uploaded_file.name,
+                "standardized_description": "Extraction failed. Manual review required.",
+                "business_function": "Not specified",
+                "deliverable_type": "Not specified",
+                "time_period": "Not specified",
+                "stakeholder": "Not specified",
+                "extraction_status": "Failed"
+            }
+
+
+        # append the record to the list of record. 
+        records.append(record)
+
+    # Step 4: Convert records into dataframe
+    work_item_df = pd.DataFrame(records)
+
+    return work_item_df
